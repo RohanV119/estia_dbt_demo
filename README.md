@@ -18,6 +18,36 @@ Seven dbt models, 39 automated data quality tests, full column-level documentati
 
 ---
 
+## TL;DR
+
+```bash
+git clone <repo-url> && cd estia_dbt_demo
+pip install dbt-snowflake
+
+export SNOWFLAKE_ACCOUNT=myorg-myaccount   # your Snowflake account identifier
+export SNOWFLAKE_USER=your.name@company.com
+
+# 1. Run setup/01_raw_data.sql in Snowsight to load the raw tables
+# 2. Then:
+dbt debug --profiles-dir .   # opens browser for SSO login
+dbt run --profiles-dir .     # builds all 7 models
+dbt test --profiles-dir .    # runs 39 data quality tests
+```
+
+---
+
+## Publishing to GitHub
+
+```bash
+# From inside estia_dbt_demo/
+git remote add origin https://github.com/<your-org>/<your-repo>.git
+git push -u origin main
+```
+
+The `.gitignore` ensures no credentials, keys, or build artifacts are pushed. Every file committed is safe to share publicly.
+
+---
+
 ## Prerequisites
 
 - Snowflake account (any edition, any cloud region)
