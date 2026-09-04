@@ -1,0 +1,47 @@
+# ---------------------------------------------------------------------------
+# dbt connection profile — Estia Health demo
+#
+# Two options are provided. Choose ONE and comment out the other.
+#
+# OPTION A (recommended for most users): SSO / browser-based login
+#   Set two environment variables, then dbt opens a browser for login.
+#
+#   export SNOWFLAKE_ACCOUNT=<your-account-identifier>
+#   export SNOWFLAKE_USER=<your-username>
+#
+# OPTION B: Username + password (CI/CD or scripted environments)
+#   Set four environment variables — no browser popup.
+#
+#   export SNOWFLAKE_ACCOUNT=<your-account-identifier>
+#   export SNOWFLAKE_USER=<your-username>
+#   export SNOWFLAKE_PASSWORD=<your-password>
+#   export SNOWFLAKE_ROLE=SYSADMIN          # optional, defaults to SYSADMIN
+#
+# Finding your account identifier
+#   In Snowsight: bottom-left corner → hover your account name → copy the
+#   identifier (format: <orgname>-<accountname>, e.g. myorg-myaccount)
+#
+# Warehouse and database
+#   export SNOWFLAKE_WAREHOUSE=COMPUTE_WH   # optional, defaults to COMPUTE_WH
+#   export SNOWFLAKE_DATABASE=ESTIA_DEMO    # optional, defaults to ESTIA_DEMO
+# ---------------------------------------------------------------------------
+
+estia:
+  target: dev
+  outputs:
+    dev:
+      type: snowflake
+      account: "{{ env_var('SNOWFLAKE_ACCOUNT') }}"
+      user: "{{ env_var('SNOWFLAKE_USER') }}"
+      database: "{{ env_var('SNOWFLAKE_DATABASE', 'ESTIA_DEMO') }}"
+      warehouse: "{{ env_var('SNOWFLAKE_WAREHOUSE', 'COMPUTE_WH') }}"
+      schema: RAW
+      threads: 4
+      client_session_keep_alive: false
+
+      # ----- OPTION A: SSO / browser login (comment out if using Option B) --
+      authenticator: externalbrowser
+
+      # ----- OPTION B: username + password (uncomment to use) ---------------
+      # password: "{{ env_var('SNOWFLAKE_PASSWORD') }}"
+      # role: "{{ env_var('SNOWFLAKE_ROLE', 'SYSADMIN') }}"

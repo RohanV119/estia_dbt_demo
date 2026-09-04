@@ -1,0 +1,97 @@
+version: 2
+
+models:
+  - name: mart_resident_care_summary
+    description: >
+      Gold-layer resident summary table. One row per resident. Joins clinical
+      assessment history, incident counts, and billing totals to give a full
+      picture of each resident's care profile and financial position.
+      Useful for care coordinators, clinical leads, and the finance team.
+    columns:
+      - name: resident_id
+        description: Primary key. Unique identifier for each resident.
+        tests:
+          - unique
+          - not_null
+      - name: full_name
+        description: Resident's full name.
+        tests:
+          - not_null
+      - name: age_years
+        description: Resident's age in full years as of today.
+      - name: care_status
+        description: "Current care status: Active, Discharged, or Deceased."
+      - name: is_active
+        description: TRUE if the resident is currently admitted.
+      - name: care_days
+        description: Total number of days in care (admission to discharge or today).
+      - name: facility_name
+        description: Name of the facility the resident is or was admitted to.
+      - name: state
+        description: State of the facility.
+      - name: latest_assessed_date
+        description: Date of the most recent clinical assessment.
+      - name: latest_assessment_score
+        description: Score from the most recent assessment (0-100).
+      - name: risk_band
+        description: "Risk classification from the latest assessment: Low, Moderate, or High."
+      - name: incident_count
+        description: Total number of incidents recorded for this resident.
+      - name: high_severity_incident_count
+        description: Number of High severity incidents recorded.
+      - name: total_billed_aud
+        description: Total amount invoiced for this resident in AUD.
+      - name: total_paid_aud
+        description: Total amount received from all payers in AUD.
+      - name: total_outstanding_aud
+        description: Total unpaid invoice amount in AUD.
+      - name: overdue_invoice_count
+        description: Number of invoices that are unpaid and more than 30 days overdue.
+
+  - name: mart_facility_kpis
+    description: >
+      Gold-layer facility KPI table. One row per facility. Aggregates occupancy,
+      clinical risk distribution, incident rates, and financial performance.
+      Designed for executive dashboards and operations reporting.
+    columns:
+      - name: facility_id
+        description: Primary key. Unique identifier for each facility.
+        tests:
+          - unique
+          - not_null
+      - name: facility_name
+        description: Full trading name of the facility.
+        tests:
+          - not_null
+      - name: city
+        description: City of the facility.
+      - name: state
+        description: Australian state of the facility.
+      - name: capacity
+        description: Total licensed bed count.
+      - name: opened_date
+        description: Date the facility first accepted residents.
+      - name: active_resident_count
+        description: Number of currently active residents.
+      - name: occupancy_pct
+        description: Active residents as a percentage of licensed capacity.
+      - name: high_risk_resident_count
+        description: Number of active residents with a High risk band on their latest assessment.
+      - name: moderate_risk_resident_count
+        description: Number of active residents with a Moderate risk band.
+      - name: avg_care_score
+        description: Average latest assessment score across all residents.
+      - name: total_incidents
+        description: Total incidents recorded across all residents at this facility.
+      - name: high_severity_incidents
+        description: Total High severity incidents across all residents at this facility.
+      - name: incidents_per_100_bed_days
+        description: Incident rate normalised per 100 bed-days. Lower is better.
+      - name: total_billed_aud
+        description: Total invoiced amount across all residents in AUD.
+      - name: total_paid_aud
+        description: Total received payments across all residents in AUD.
+      - name: total_outstanding_aud
+        description: Total unpaid invoice balance in AUD.
+      - name: overdue_invoice_count
+        description: Total overdue invoices across all residents at this facility.

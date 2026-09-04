@@ -1,0 +1,23 @@
+# dbt build artifacts
+target/
+dbt_packages/
+
+# dbt logs
+logs/
+
+# dbt internal user state
+.user.yml
+
+# Credentials and private keys — never commit these
+*.p8
+*.pub
+*.pem
+.env
+.env.*
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc

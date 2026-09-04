@@ -1,0 +1,191 @@
+version: 2
+
+models:
+  - name: stg_facilities
+    description: >
+      Cleaned and standardised facility records. State codes are uppercased for
+      consistency. One row per facility.
+    columns:
+      - name: facility_id
+        description: Primary key. Unique identifier for each facility.
+        tests:
+          - unique
+          - not_null
+      - name: facility_name
+        description: Full trading name of the facility.
+        tests:
+          - not_null
+      - name: city
+        description: City where the facility is located.
+      - name: state
+        description: Uppercase Australian state abbreviation.
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['VIC', 'NSW', 'SA', 'QLD', 'WA', 'TAS', 'ACT', 'NT']
+      - name: capacity
+        description: Total number of licensed residential aged care beds.
+        tests:
+          - not_null
+      - name: opened_date
+        description: Date the facility first accepted residents.
+
+  - name: stg_residents
+    description: >
+      Cleaned resident records with derived fields including full name, age in years,
+      total care days, and boolean flags for active/deceased status.
+    columns:
+      - name: resident_id
+        description: Primary key. Unique identifier for each resident.
+        tests:
+          - unique
+          - not_null
+      - name: facility_id
+        description: Foreign key to stg_facilities.
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_facilities')
+                field: facility_id
+      - name: full_name
+        description: Concatenation of first_name and last_name.
+      - name: age_years
+        description: Resident's age in full years as of today.
+      - name: care_days
+        description: Number of days from admission to discharge (or today if still active).
+      - name: status
+        description: Current care status.
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['Active', 'Discharged', 'Deceased']
+      - name: is_active
+        description: TRUE if the resident's status is Active.
+      - name: is_deceased
+        description: TRUE if the resident's status is Deceased.
+
+  - name: stg_care_assessments
+    description: >
+      Cleaned care assessment records with a derived risk_band classification.
+      Scores of 70+ are High complexity; 40-69 are Moderate; below 40 are Low.
+    columns:
+      - name: assessment_id
+        description: Primary key. Unique identifier for each assessment.
+        tests:
+          - unique
+          - not_null
+      - name: resident_id
+        description: Foreign key to stg_residents.
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_residents')
+                field: resident_id
+      - name: assessed_date
+        description: Date the assessment was conducted.
+        tests:
+          - not_null
+      - name: assessment_type
+        description: Assessment tool used.
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['ACFI', 'InterRAI']
+      - name: score
+        description: Assessment score from 0-100. Higher = greater care complexity.
+        tests:
+          - not_null
+      - name: risk_band
+        description: Derived risk classification based on score.
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['Low', 'Moderate', 'High']
+      - name: is_high_complexity
+        description: TRUE if the assessment score is 70 or above.
+
+  - name: stg_incidents
+    description: >
+      Cleaned incident records with boolean severity flags added for easier filtering
+      and aggregation downstream.
+    columns:
+      - name: incident_id
+        description: Primary key. Unique identifier for each incident.
+        tests:
+          - unique
+          - not_null
+      - name: resident_id
+        description: Foreign key to stg_residents.
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_residents')
+                field: resident_id
+      - name: incident_date
+        description: Date the incident occurred.
+        tests:
+          - not_null
+      - name: incident_type
+        description: Category of incident.
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['Fall', 'Medication Error', 'Wound', 'Behavioural', 'Other']
+      - name: severity
+        description: Reported severity level.
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['Low', 'Medium', 'High']
+      - name: is_high_severity
+        description: TRUE if severity is High.
+      - name: is_low_severity
+        description: TRUE if severity is Low.
+
+  - name: stg_invoices
+    description: >
+      Cleaned invoice records with derived payment_status, is_overdue flag, and
+      split amount columns for paid vs outstanding amounts.
+    columns:
+      - name: invoice_id
+        description: Primary key. Unique identifier for each invoice.
+        tests:
+          - unique
+          - not_null
+      - name: resident_id
+        description: Foreign key to stg_residents.
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_residents')
+                field: resident_id
+      - name: invoice_date
+        description: Date the invoice was issued.
+        tests:
+          - not_null
+      - name: amount_aud
+        description: Total invoice amount in Australian dollars.
+        tests:
+          - not_null
+      - name: payer_type
+        description: Funding body responsible for payment.
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['Government', 'NDIS', 'Private']
+      - name: payment_status
+        description: "Derived status: Paid, Overdue (unpaid and >30 days old), or Pending."
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['Paid', 'Overdue', 'Pending']
+      - name: is_overdue
+        description: TRUE if the invoice is unpaid and was issued more than 30 days ago.
+      - name: amount_paid_aud
+        description: Amount paid. Equals amount_aud if paid, otherwise 0.
+      - name: amount_outstanding_aud
+        description: Amount still owed. Equals amount_aud if unpaid, otherwise 0.

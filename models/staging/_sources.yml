@@ -1,0 +1,101 @@
+version: 2
+
+sources:
+  - name: raw
+    database: ESTIA_DEMO
+    schema: RAW
+    description: >
+      Raw operational data loaded directly into Snowflake via the setup script.
+      This represents source-of-truth data from Estia Health's care management
+      and billing systems before any transformation.
+
+    tables:
+      - name: raw_facilities
+        description: One row per Estia Health facility. Contains location, capacity, and opening date.
+        columns:
+          - name: facility_id
+            description: Primary key. Unique identifier for each facility.
+          - name: facility_name
+            description: Full trading name of the facility.
+          - name: city
+            description: City where the facility is located.
+          - name: state
+            description: Australian state abbreviation (VIC, NSW, SA, QLD).
+          - name: capacity
+            description: Total number of licensed residential aged care beds.
+          - name: opened_date
+            description: Date the facility first accepted residents.
+
+      - name: raw_residents
+        description: >
+          One row per resident admission. Includes demographics, the facility they are
+          admitted to, and their current care status.
+        columns:
+          - name: resident_id
+            description: Primary key. Unique identifier for each resident.
+          - name: facility_id
+            description: Foreign key to raw_facilities.
+          - name: first_name
+            description: Resident's first name.
+          - name: last_name
+            description: Resident's last name.
+          - name: date_of_birth
+            description: Resident's date of birth.
+          - name: admission_date
+            description: Date the resident was admitted to care.
+          - name: discharge_date
+            description: Date the resident left care. NULL if still admitted.
+          - name: status
+            description: "Current care status. One of: Active, Discharged, Deceased."
+
+      - name: raw_care_assessments
+        description: >
+          Clinical assessments conducted for each resident. Multiple assessments
+          may exist per resident over time (ACFI and InterRAI tools).
+        columns:
+          - name: assessment_id
+            description: Primary key. Unique identifier for each assessment.
+          - name: resident_id
+            description: Foreign key to raw_residents.
+          - name: assessed_date
+            description: Date the assessment was conducted.
+          - name: assessment_type
+            description: "Assessment tool used. One of: ACFI, InterRAI."
+          - name: score
+            description: Numeric score from 0-100. Higher scores indicate greater care complexity.
+
+      - name: raw_incidents
+        description: >
+          Incident reports logged for residents. Captures falls, medication errors,
+          wounds, and behavioural incidents with severity ratings.
+        columns:
+          - name: incident_id
+            description: Primary key. Unique identifier for each incident.
+          - name: resident_id
+            description: Foreign key to raw_residents.
+          - name: incident_date
+            description: Date the incident occurred.
+          - name: incident_type
+            description: "Category of incident. One of: Fall, Medication Error, Wound, Behavioural, Other."
+          - name: severity
+            description: "Reported severity. One of: Low, Medium, High."
+
+      - name: raw_invoices
+        description: >
+          Monthly care invoices issued to residents or their funding bodies.
+          Covers Government, NDIS, and Private payer types.
+        columns:
+          - name: invoice_id
+            description: Primary key. Unique identifier for each invoice.
+          - name: resident_id
+            description: Foreign key to raw_residents.
+          - name: invoice_date
+            description: Date the invoice was issued.
+          - name: amount_aud
+            description: Invoice amount in Australian dollars.
+          - name: payer_type
+            description: "Funding body responsible for payment. One of: Government, NDIS, Private."
+          - name: is_paid
+            description: TRUE if the invoice has been settled.
+          - name: paid_date
+            description: Date payment was received. NULL if unpaid.

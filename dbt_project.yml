@@ -1,0 +1,33 @@
+name: estia_dbt_demo
+version: '1.0.0'
+config-version: 2
+
+profile: estia
+
+model-paths: ["models"]
+analysis-paths: ["analyses"]
+test-paths: ["tests"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+
+target-path: "target"
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+models:
+  estia_dbt_demo:
+    staging:
+      # Silver layer: light cleaning and enrichment. Views are cheap and
+      # always current - no storage cost, no refresh to schedule.
+      +materialized: view
+      +schema: SILVER
+      # Tag drives the task DAG selector (build --select tag:silver).
+      # Tag-based selection means new models join the DAG automatically.
+      +tags: ["silver"]
+    marts:
+      # Gold layer: business-facing marts. Materialised as tables so BI
+      # tools and Cortex Analyst read pre-computed results.
+      +materialized: table
+      +schema: GOLD
+      +tags: ["gold"]
