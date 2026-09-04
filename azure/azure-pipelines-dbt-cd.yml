@@ -1,0 +1,197 @@
+# ===========================================================================
+# PIPELINE 2 of 2 - DEPLOY TO PRODUCTION (on merge to main)
+#
+# PURPOSE: promote reviewed, PR-validated code into the PROD dbt project
+#          object. That is almost the whole job.
+#
+# WHY THIS IS SO SHORT: the production TASK DAG already exists and already
+# points at this project object by name. EXECUTE DBT PROJECT has no version
+# parameter - the task always runs the object's latest version. So deploying
+# a new version is the deployment. The next scheduled task run picks it up.
+# No task DDL, no suspend/resume, no touching the DAG.
+#
+# ---------------------------------------------------------------------------
+# DEMO SCRIPT - what to say while this runs:
+#   1. "Merge to main. Note this pipeline uses a DIFFERENT service user and
+#       role than PR validation - PROD credentials exist only here."
+#   2. "It waits for approval. That gate is an Azure DevOps Environment,
+#       which is why this had to be a separate pipeline from PR validation -
+#       PR builds must never wait on a human."
+#   3. "One command: snow dbt deploy. That adds a new version to the PROD
+#       project object."
+#   4. "And we're done. The task DAG is unchanged - it references the project
+#       BY NAME, so the next scheduled run picks up this code automatically."
+#   5. "Optional smoke test: we run dbt build --select tag:gold immediately so
+#       we don't wait until 2am to find out something broke."
+# ---------------------------------------------------------------------------
+
+# Runs on merge to main. NOT on PRs.
+trigger:
+  branches:
+    include:
+      - main                      # <PLACEHOLDER>
+  paths:
+    include:
+      - dbt/**                    # <PLACEHOLDER>
+
+pr: none
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  # PROD-only variable group. Separate from the CI group by design.
+  - group: snowflake-dbt-prod     # <PLACEHOLDER>
+
+  - name: DBT_PROJECT_DIR
+    value: dbt                    # <PLACEHOLDER>
+
+  # --- Snowflake PROD target ---------------------------------------------
+  - name: SF_ACCOUNT
+    value: <PLACEHOLDER_ORG-ACCOUNT>
+  - name: SF_USER
+    value: <PLACEHOLDER_SVC_DBT_PROD>
+  - name: SF_ROLE
+    value: <PLACEHOLDER_DBT_PROD_ROLE>
+  - name: SF_WAREHOUSE
+    value: <PLACEHOLDER_WH_DBT_PROD>
+
+  # The LONG-LIVED project object that the task DAG points at.
+  # This name must match the one in snowflake/dbt_task_dag.sql.
+  - name: PROJECT_DB
+    value: <PLACEHOLDER_ANALYTICS_DB>
+  - name: PROJECT_SCHEMA
+    value: <PLACEHOLDER_DBT_SCHEMA>
+  - name: PROJECT_NAME
+    value: ESTIA_DBT              # <PLACEHOLDER>
+
+  - name: DBT_ENV
+    value: prod                   # <PLACEHOLDER>
+
+stages:
+  # =======================================================================
+  # STAGE 1 - Deploy. Gated on human approval via the Environment.
+  # =======================================================================
+  - stage: DeployProd
+    displayName: 'Deploy to PROD'
+    jobs:
+      - deployment: deploy
+        displayName: 'snow dbt deploy -> PROD project object'
+        # The approval gate lives on this Environment. Configure required
+        # approvers in Pipelines > Environments > <name> > Approvals.
+        environment: snowflake-prod    # <PLACEHOLDER>
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                  fetchDepth: 0
+
+                - template: templates/snowflake-setup.yml
+                  parameters:
+                    connectionName: prod
+                    account: $(SF_ACCOUNT)
+                    user: $(SF_USER)
+                    role: $(SF_ROLE)
+                    warehouse: $(SF_WAREHOUSE)
+                    database: $(PROJECT_DB)
+                    schema: $(PROJECT_SCHEMA)
+                    privateKeySecureFile: <PLACEHOLDER_snowflake_prod_key.p8>
+
+                - script: |
+                    set -euo pipefail
+                    echo "=========================================================="
+                    echo " STEP: Record the PRE-deploy state"
+                    echo " WHY:  If we need to answer 'what changed and when',"
+                    echo "       this is the before picture. Also proves the task"
+                    echo "       DAG is untouched by this deployment."
+                    echo "=========================================================="
+                    snow sql -c prod -q "DESCRIBE DBT PROJECT $(PROJECT_DB).$(PROJECT_SCHEMA).$(PROJECT_NAME);"
+                    snow sql -c prod -q "SHOW VERSIONS IN DBT PROJECT $(PROJECT_DB).$(PROJECT_SCHEMA).$(PROJECT_NAME);"
+                    echo "--- Tasks that consume this project (should not change) ---"
+                    snow sql -c prod -q "SHOW TASKS IN SCHEMA $(PROJECT_DB).$(PROJECT_SCHEMA);"
+                  displayName: 'PROD | Snapshot state before deploy'
+
+                # ---------------------------------------------------------
+                # THE DEPLOYMENT. One command.
+                #
+                # This adds VERSION$N+1 and the object's default version
+                # pointer advances to it. Because the task DAG references the
+                # project by NAME (EXECUTE DBT PROJECT has no version arg),
+                # the next task run uses this code. Nothing else to do.
+                #
+                # NEVER add --force. --force runs CREATE OR REPLACE DBT
+                # PROJECT, which DELETES every version and the entire run
+                # history. That loss is unrecoverable.
+                # ---------------------------------------------------------
+                - script: |
+                    set -euo pipefail
+                    echo "=========================================================="
+                    echo " STEP: Deploy new version to the PROD project object"
+                    echo " WHY:  This IS the deployment. Adds a new immutable"
+                    echo "       version; the default pointer moves to it."
+                    echo " NOTE: no --force, ever. --force = CREATE OR REPLACE,"
+                    echo "       which wipes all versions and run history."
+                    echo " COMMIT: $(Build.SourceVersion)"
+                    echo "=========================================================="
+                    snow dbt deploy "$(PROJECT_NAME)" \
+                      -c prod \
+                      --source "$(Build.SourcesDirectory)/$(DBT_PROJECT_DIR)" \
+                      --database "$(PROJECT_DB)" \
+                      --schema "$(PROJECT_SCHEMA)" \
+                      --default-env "$(DBT_ENV)"
+
+                    snow sql -c prod -q \
+                      "ALTER DBT PROJECT $(PROJECT_DB).$(PROJECT_SCHEMA).$(PROJECT_NAME) SET COMMENT = 'Deployed from commit $(Build.SourceVersion) by build $(Build.BuildNumber)';"
+                  displayName: 'PROD | snow dbt deploy'
+
+                - script: |
+                    set -euo pipefail
+                    echo "=========================================================="
+                    echo " STEP: Confirm the new version is live"
+                    echo " WHY:  Shows the version count incremented, and that the"
+                    echo "       task DAG is byte-for-byte unchanged. The tasks"
+                    echo "       will pick up this code on their next run."
+                    echo "=========================================================="
+                    snow sql -c prod -q "SHOW VERSIONS IN DBT PROJECT $(PROJECT_DB).$(PROJECT_SCHEMA).$(PROJECT_NAME);"
+                    snow sql -c prod -q "SHOW TASKS IN SCHEMA $(PROJECT_DB).$(PROJECT_SCHEMA);"
+                  displayName: 'PROD | Verify deployment'
+
+  # =======================================================================
+  # STAGE 2 - Optional immediate smoke test.
+  #
+  # Without this you wait until the next scheduled task run to discover a
+  # problem. Delete this stage if you would rather let the schedule do it.
+  # =======================================================================
+  - stage: SmokeTest
+    displayName: 'Smoke test the deployed version'
+    dependsOn: DeployProd
+    condition: succeeded()
+    jobs:
+      - job: smoke
+        displayName: 'Run gold layer + tests now'
+        steps:
+          - checkout: none
+
+          - template: templates/snowflake-setup.yml
+            parameters:
+              connectionName: prod
+              account: $(SF_ACCOUNT)
+              user: $(SF_USER)
+              role: $(SF_ROLE)
+              warehouse: $(SF_WAREHOUSE)
+              database: $(PROJECT_DB)
+              schema: $(PROJECT_SCHEMA)
+              privateKeySecureFile: <PLACEHOLDER_snowflake_prod_key.p8>
+
+          - script: |
+              set -euo pipefail
+              echo "=========================================================="
+              echo " STEP: Smoke test - build the gold layer immediately"
+              echo " WHY:  Don't wait for the 2am task run to learn something"
+              echo "       broke. Fails loudly now, while someone is awake."
+              echo " NOTE: this runs the version we just deployed, because the"
+              echo "       project object always executes its latest version."
+              echo "=========================================================="
+              snow sql -c prod -q "EXECUTE DBT PROJECT $(PROJECT_DB).$(PROJECT_SCHEMA).$(PROJECT_NAME) ARGS='build --select tag:gold --target prod' ENVIRONMENT='$(DBT_ENV)';"
+            displayName: 'PROD | Smoke test (gold layer)'

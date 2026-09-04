@@ -1,0 +1,200 @@
+# ===========================================================================
+# PIPELINE 1 of 2 - PULL REQUEST VALIDATION
+#
+# PURPOSE: Answer one question before anyone merges - "does this dbt code
+#          build and do its tests pass?"
+#
+# THE CORE IDEA: every PR gets its own throwaway DBT PROJECT object and its
+# own target schema in a CI database. Nothing this pipeline does can touch
+# production. Concurrent PRs cannot collide. Everything is dropped at the end.
+#
+# NEVER GATED ON A HUMAN. Runs unattended on every push to an open PR.
+#
+# ---------------------------------------------------------------------------
+# DEMO SCRIPT - what to say while this runs:
+#   1. "A PR opens. CI has no PROD credentials at all - look at the identity
+#       step, it's a CI-only role on a CI-only database."
+#   2. "We deploy the PR's code as its own versioned Snowflake object, named
+#       after the PR number, so ten open PRs are ten isolated objects."
+#   3. "Compile first - fails in seconds on a typo, before we spend warehouse
+#       credits building anything."
+#   4. "Then dbt build: models AND tests, in dependency order. If a bronze
+#       test fails, dbt skips everything downstream automatically."
+#   5. "Then we destroy it all - note the condition: always(), so cleanup runs
+#       even when the build fails. No orphaned objects, no CI storage creep."
+# ---------------------------------------------------------------------------
+
+# PR-only. Pushing to a branch does nothing; this is not a deployment pipeline.
+trigger: none
+
+pr:
+  branches:
+    include:
+      - main                      # <PLACEHOLDER> PR target branch
+  paths:
+    include:
+      - dbt/**                    # <PLACEHOLDER> only run when dbt code changes
+      - azure/**
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  # Variable group holding CI-ONLY secrets. Must NOT contain PROD credentials.
+  - group: snowflake-dbt-ci       # <PLACEHOLDER>
+
+  - name: DBT_PROJECT_DIR
+    value: dbt                    # <PLACEHOLDER> folder with dbt_project.yml
+
+  # --- Snowflake CI target. Deliberately a separate database from PROD. ----
+  - name: SF_ACCOUNT
+    value: <PLACEHOLDER_ORG-ACCOUNT>
+  - name: SF_USER
+    value: <PLACEHOLDER_SVC_DBT_CI>
+  - name: SF_ROLE
+    value: <PLACEHOLDER_DBT_CI_ROLE>
+  - name: SF_WAREHOUSE
+    value: <PLACEHOLDER_WH_DBT_CI>
+  - name: PROJECT_DB
+    value: <PLACEHOLDER_DBT_CI_DB>
+  - name: PROJECT_SCHEMA
+    value: PROJECTS
+
+  # PR-scoped names. This is what makes concurrent PRs safe.
+  - name: PR_PROJECT
+    value: PR_$(System.PullRequest.PullRequestId)_DBT
+  - name: PR_SCHEMA
+    value: PR_$(System.PullRequest.PullRequestId)
+
+  # Environment from env.yml. Use NO_ENV if the project has no env.yml.
+  - name: DBT_ENV
+    value: ci                     # <PLACEHOLDER>
+
+jobs:
+  - job: validate
+    displayName: 'Validate dbt project'
+    timeoutInMinutes: 60
+    steps:
+      - checkout: self
+        fetchDepth: 0
+
+      # -------------------------------------------------------------------
+      # Shared auth. Passing the CI identity - no PROD anything.
+      # -------------------------------------------------------------------
+      - template: templates/snowflake-setup.yml
+        parameters:
+          connectionName: ci
+          account: $(SF_ACCOUNT)
+          user: $(SF_USER)
+          role: $(SF_ROLE)
+          warehouse: $(SF_WAREHOUSE)
+          database: $(PROJECT_DB)
+          schema: $(PROJECT_SCHEMA)
+          privateKeySecureFile: <PLACEHOLDER_snowflake_ci_key.p8>
+
+      - script: |
+          set -euo pipefail
+          echo "=============================================================="
+          echo " STEP: Create isolated sandbox for THIS pull request"
+          echo " WHY:  PR #$(System.PullRequest.PullRequestId) gets its own"
+          echo "       schema. Two PRs open at once never overwrite each"
+          echo "       other's tables, so a green build means something."
+          echo " CREATING: $(PROJECT_DB).$(PR_SCHEMA)"
+          echo "=============================================================="
+          snow sql -c ci -q "CREATE SCHEMA IF NOT EXISTS $(PROJECT_DB).$(PROJECT_SCHEMA);"
+          snow sql -c ci -q "CREATE SCHEMA IF NOT EXISTS $(PROJECT_DB).$(PR_SCHEMA);"
+        displayName: 'PR | Create isolated CI schema'
+
+      # -------------------------------------------------------------------
+      # THE STEP PEOPLE FORGET.
+      # 'snow dbt execute' runs whatever is STORED IN SNOWFLAKE, never your
+      # local files. Skip this deploy and you rebuild the OLD code and get a
+      # green run that proves nothing. Deploy is mandatory after every change.
+      # -------------------------------------------------------------------
+      - script: |
+          set -euo pipefail
+          echo "=============================================================="
+          echo " STEP: Deploy the PR's code into Snowflake"
+          echo " WHY:  dbt Projects on Snowflake stores your project AS A"
+          echo "       SNOWFLAKE OBJECT. 'execute' runs the stored copy, not"
+          echo "       your working directory. No deploy = testing old code."
+          echo " OBJECT: $(PROJECT_DB).$(PROJECT_SCHEMA).$(PR_PROJECT)"
+          echo "=============================================================="
+          snow dbt deploy "$(PR_PROJECT)" \
+            -c ci \
+            --source "$(Build.SourcesDirectory)/$(DBT_PROJECT_DIR)" \
+            --database "$(PROJECT_DB)" \
+            --schema "$(PROJECT_SCHEMA)" \
+            --default-env "$(DBT_ENV)"
+
+          echo "--- Versions now on this object ---"
+          snow sql -c ci -q "SHOW VERSIONS IN DBT PROJECT $(PROJECT_DB).$(PROJECT_SCHEMA).$(PR_PROJECT);"
+        displayName: 'PR | snow dbt deploy'
+
+      - script: |
+          set -euo pipefail
+          echo "=============================================================="
+          echo " STEP: Compile only - no objects created"
+          echo " WHY:  Catches Jinja errors, bad ref(), missing sources in"
+          echo "       seconds. Cheap gate before we burn warehouse credits."
+          echo "=============================================================="
+          snow dbt execute -c ci \
+            --database "$(PROJECT_DB)" \
+            --schema "$(PROJECT_SCHEMA)" \
+            --env "$(DBT_ENV)" \
+            --env-vars '{"DBT_TARGET_SCHEMA": "$(PR_SCHEMA)"}' \
+            "$(PR_PROJECT)" compile
+        displayName: 'PR | dbt compile (fast fail)'
+
+      # -------------------------------------------------------------------
+      # build = run + test + seed + snapshot, in dbt's dependency order.
+      # dbt derives bronze -> silver -> gold from ref(), so we do NOT need
+      # to restate the medallion ordering here.
+      # If an upstream model or test fails, dbt SKIPS everything downstream.
+      # -------------------------------------------------------------------
+      - script: |
+          set -euo pipefail
+          echo "=============================================================="
+          echo " STEP: dbt build - models AND tests together"
+          echo " WHY:  'build' interleaves tests with models in DAG order. A"
+          echo "       failing bronze test stops silver and gold from being"
+          echo "       built on top of bad data, instead of after."
+          echo " TARGET: $(PROJECT_DB).$(PR_SCHEMA)  (throwaway)"
+          echo "=============================================================="
+          snow dbt execute -c ci \
+            --database "$(PROJECT_DB)" \
+            --schema "$(PROJECT_SCHEMA)" \
+            --env "$(DBT_ENV)" \
+            --env-vars '{"DBT_TARGET_SCHEMA": "$(PR_SCHEMA)"}' \
+            "$(PR_PROJECT)" build
+        displayName: 'PR | dbt build (run + test)'
+
+      - script: |
+          set -euo pipefail
+          echo "=============================================================="
+          echo " STEP: Summarise what got built"
+          echo " WHY:  Gives the PR reviewer a concrete artifact list rather"
+          echo "       than making them read the whole dbt log."
+          echo "=============================================================="
+          snow sql -c ci -q "SHOW TABLES IN SCHEMA $(PROJECT_DB).$(PR_SCHEMA);"
+          snow sql -c ci -q "SHOW VIEWS IN SCHEMA $(PROJECT_DB).$(PR_SCHEMA);"
+        displayName: 'PR | Report built objects'
+        condition: succeededOrFailed()
+
+      # -------------------------------------------------------------------
+      # always() - cleanup MUST run even when the build failed, otherwise
+      # failed PRs leave dead project objects and schemas behind forever.
+      # -------------------------------------------------------------------
+      - script: |
+          set -euo pipefail
+          echo "=============================================================="
+          echo " STEP: Tear down the sandbox"
+          echo " WHY:  condition: always() - runs even on failure. Without"
+          echo "       this, every failed PR leaks a project object and a"
+          echo "       schema, and CI storage grows forever."
+          echo "=============================================================="
+          snow sql -c ci -q "DROP DBT PROJECT IF EXISTS $(PROJECT_DB).$(PROJECT_SCHEMA).$(PR_PROJECT);"
+          snow sql -c ci -q "DROP SCHEMA IF EXISTS $(PROJECT_DB).$(PR_SCHEMA) CASCADE;"
+          echo "Sandbox removed. PROD was never touched by this pipeline."
+        displayName: 'PR | Tear down (always runs)'
+        condition: always()

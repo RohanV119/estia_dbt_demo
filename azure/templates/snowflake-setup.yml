@@ -1,0 +1,101 @@
+# ===========================================================================
+# SHARED STEP TEMPLATE - Snowflake setup
+#
+# Not a pipeline. Has no trigger and cannot be run on its own. Both the PR
+# and CD pipelines include it so the auth logic lives in exactly one place
+# while the *credentials* stay separate (each caller passes its own).
+#
+# DEMO NOTE: point at this file to show that PR validation and production
+# deployment share zero credentials. Same code path, different identity.
+# ===========================================================================
+
+parameters:
+  # Which Snowflake identity this caller wants. The PR pipeline passes a
+  # CI-only service user; the CD pipeline passes a PROD one.
+  - name: connectionName
+    type: string
+    default: sf
+  - name: account
+    type: string
+  - name: user
+    type: string
+  - name: role
+    type: string
+  - name: warehouse
+    type: string
+  - name: database
+    type: string
+  - name: schema
+    type: string
+  # Name of the Secure File (Pipelines > Library > Secure files) holding the
+  # PKCS#8 private key. Different file per environment.
+  - name: privateKeySecureFile
+    type: string
+  # Pin the CLI. Do not float on >=3.22 - connection flag behaviour has
+  # shifted between releases and a floating install turns a green pipeline
+  # red with no code change.
+  - name: cliVersion
+    type: string
+    default: '3.22.0'
+
+steps:
+  - task: UsePythonVersion@0
+    displayName: 'Setup | Python 3.11'
+    inputs:
+      versionSpec: '3.11'
+
+  - script: |
+      set -euo pipefail
+      echo "=============================================================="
+      echo " STEP: Install Snowflake CLI"
+      echo " WHY:  'snow dbt' is how we talk to dbt Projects on Snowflake."
+      echo "       Version is PINNED (${{ parameters.cliVersion }}) so a new"
+      echo "       CLI release can never silently break this pipeline."
+      echo "=============================================================="
+      python -m pip install --upgrade pip --quiet
+      pip install "snowflake-cli==${{ parameters.cliVersion }}" --quiet
+      snow --version
+    displayName: 'Setup | Install Snowflake CLI (pinned)'
+
+  - task: DownloadSecureFile@1
+    name: sfKey
+    displayName: 'Setup | Fetch private key'
+    inputs:
+      secureFile: ${{ parameters.privateKeySecureFile }}
+
+  - script: |
+      set -euo pipefail
+      echo "=============================================================="
+      echo " STEP: Authenticate to Snowflake (key-pair / JWT)"
+      echo " WHY:  No passwords anywhere. The private key is an Azure DevOps"
+      echo "       Secure File, scoped so only this pipeline can read it."
+      echo " IDENTITY FOR THIS RUN:"
+      echo "   user      = ${{ parameters.user }}"
+      echo "   role      = ${{ parameters.role }}"
+      echo "   database  = ${{ parameters.database }}"
+      echo "=============================================================="
+
+      chmod 600 "$(sfKey.secureFilePath)"
+
+      snow connection add \
+        --connection-name "${{ parameters.connectionName }}" \
+        --account "${{ parameters.account }}" \
+        --user "${{ parameters.user }}" \
+        --role "${{ parameters.role }}" \
+        --warehouse "${{ parameters.warehouse }}" \
+        --database "${{ parameters.database }}" \
+        --schema "${{ parameters.schema }}" \
+        --authenticator SNOWFLAKE_JWT \
+        --private-key "$(sfKey.secureFilePath)" \
+        --no-interactive
+
+      echo "--- Verifying the connection actually works ---"
+      snow connection test -c "${{ parameters.connectionName }}"
+
+      echo "--- Confirming which identity Snowflake thinks we are ---"
+      snow sql -c "${{ parameters.connectionName }}" \
+        -q "SELECT CURRENT_USER() AS whoami, CURRENT_ROLE() AS acting_role, CURRENT_WAREHOUSE() AS wh;"
+    displayName: 'Setup | Authenticate and prove identity'
+    env:
+      # Only needed if the .p8 key is passphrase-encrypted.
+      PRIVATE_KEY_PASSPHRASE: $(SNOWFLAKE_PRIVATE_KEY_PASSPHRASE)
